@@ -35,7 +35,7 @@ IMAGE_TO_PAA    = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin
 class PBOTool(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("brnz PBO Project")
+        self.title("brnz Server Tools")
         self.resizable(False, False)
         self.configure(bg="#1e1e1e")
 
@@ -55,21 +55,25 @@ class PBOTool(tk.Tk):
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=8, pady=8)
 
-        self.tab_pbo = ttk.Frame(notebook)
-        self.tab_shop = ttk.Frame(notebook)
-        notebook.add(self.tab_pbo,  text="  PBO Builder  ")
-        notebook.add(self.tab_shop, text="  Flag / Mural  ")
+        self.tab_pbo    = ttk.Frame(notebook)
+        self.tab_shop   = ttk.Frame(notebook)
+        self.tab_server = ttk.Frame(notebook)
+        notebook.add(self.tab_pbo,    text="  PBO Builder  ")
+        notebook.add(self.tab_shop,   text="  Flag / Mural  ")
+        notebook.add(self.tab_server, text="  Local Server  ")
 
         self._build_pbo_tab()
         self._build_shop_tab()
+        self._build_server_tab()
         self._populate_mods()
+        self._ensure_start_bat()
 
     def _build_pbo_tab(self):
         pad = {"padx": 12, "pady": 6}
         f = self.tab_pbo
 
         # Header
-        ttk.Label(f, text="brnz PBO Project", style="Header.TLabel").grid(row=0, column=0, columnspan=2, pady=(14, 4), padx=12, sticky="w")
+        ttk.Label(f, text="PBO Builder", style="Header.TLabel").grid(row=0, column=0, columnspan=2, pady=(14, 4), padx=12, sticky="w")
         ttk.Separator(f, orient="horizontal").grid(row=1, column=0, columnspan=2, sticky="ew", padx=12)
 
         # Mod selector with search
@@ -652,6 +656,465 @@ class CfgVehicles
 
         except Exception as e:
             self._log(f"Failed to create mod: {e}", "err")
+
+    # ── Local Server Tab ──────────────────────────────────────────────────────
+    def _build_server_tab(self):
+        import json
+        f = self.tab_server
+        pad = {"padx": 12, "pady": 4}
+
+        self._server_proc = None
+        self._log_after   = None
+        self._selections_file = os.path.join(os.path.dirname(__file__), "server_mod_selections.json")
+
+        ttk.Label(f, text="Local Server Manager", style="Header.TLabel").grid(row=0, column=0, columnspan=3, pady=(14, 4), padx=12, sticky="w")
+        ttk.Separator(f, orient="horizontal").grid(row=1, column=0, columnspan=3, sticky="ew", padx=12)
+
+        # Start / Stop buttons
+        btn_frame = ttk.Frame(f)
+        btn_frame.grid(row=2, column=0, columnspan=3, pady=8)
+        self.srv_start_btn = ttk.Button(btn_frame, text="Start Server", command=self._start_server)
+        self.srv_start_btn.pack(side="left", padx=6)
+        self.srv_stop_btn  = ttk.Button(btn_frame, text="Stop Server",  command=self._stop_server, state="disabled")
+        self.srv_stop_btn.pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Start Settings", command=self._edit_params_dialog).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Server Config", command=self._edit_server_cfg_dialog).pack(side="left", padx=6)
+        self.srv_status_lbl = ttk.Label(btn_frame, text="● Stopped", foreground="#f44747", background="#1e1e1e", font=("Segoe UI", 10, "bold"))
+        self.srv_status_lbl.pack(side="left", padx=12)
+
+        ttk.Separator(f, orient="horizontal").grid(row=3, column=0, columnspan=3, sticky="ew", padx=12, pady=4)
+
+        # Mod list (left) + log viewer (right)
+        mod_hdr = ttk.Frame(f)
+        mod_hdr.grid(row=4, column=0, sticky="w", padx=12)
+        ttk.Label(mod_hdr, text="Mods", style="Header.TLabel").pack(side="left")
+        ttk.Button(mod_hdr, text="↻", width=3, command=self._load_server_mods).pack(side="left", padx=(8, 0))
+        ttk.Label(f, text="Log Viewer", style="Header.TLabel").grid(row=4, column=1, columnspan=2, sticky="w", padx=12)
+
+        # Mod checkboxes
+        mod_outer = ttk.Frame(f)
+        mod_outer.grid(row=5, column=0, sticky="nsw", padx=12, pady=4)
+        canvas_frame = ttk.Frame(mod_outer)
+        canvas_frame.pack(side="top", fill="both")
+        self._mod_canvas = tk.Canvas(canvas_frame, width=220, height=300, bg="#1e1e1e", highlightthickness=0)
+        mod_canvas = self._mod_canvas
+        mod_scroll = ttk.Scrollbar(canvas_frame, orient="vertical", command=mod_canvas.yview)
+        mod_canvas.configure(yscrollcommand=mod_scroll.set)
+        mod_canvas.pack(side="left", fill="both")
+        mod_scroll.pack(side="left", fill="y")
+        self.mod_check_frame = ttk.Frame(mod_canvas)
+        mod_canvas.create_window((0, 0), window=self.mod_check_frame, anchor="nw")
+        self.mod_check_frame.bind("<Configure>", lambda e: mod_canvas.configure(scrollregion=mod_canvas.bbox("all")))
+        mod_canvas.bind("<MouseWheel>", lambda e: mod_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.mod_check_frame.bind("<MouseWheel>", lambda e: mod_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        self._mod_check_vars = {}
+        self._srv_search_var = tk.StringVar()
+        self._srv_search_var.trace_add("write", self._filter_server_mods)
+        srv_search = tk.Entry(mod_outer, textvariable=self._srv_search_var, width=28,
+                              bg="#3a3a3a", fg="#888888", insertbackground="#d4d4d4",
+                              relief="flat", font=("Segoe UI", 9))
+        srv_search.insert(0, "Search mods...")
+        srv_search.pack(side="top", fill="x", pady=(0, 4))
+
+        def _on_focus_in(e):
+            if srv_search.get() == "Search mods...":
+                srv_search.delete(0, "end")
+                srv_search.configure(fg="#d4d4d4")
+        def _on_focus_out(e):
+            if not srv_search.get():
+                srv_search.insert(0, "Search mods...")
+                srv_search.configure(fg="#888888")
+        srv_search.bind("<FocusIn>",  _on_focus_in)
+        srv_search.bind("<FocusOut>", _on_focus_out)
+        self._load_server_mods()
+
+        # Log viewer
+        log_frame = ttk.Frame(f)
+        log_frame.grid(row=5, column=1, columnspan=2, sticky="nsew", padx=(0, 12), pady=4)
+
+        log_pick_frame = ttk.Frame(log_frame)
+        log_pick_frame.pack(fill="x")
+        ttk.Label(log_pick_frame, text="Log:").pack(side="left", padx=(0, 6))
+        self.log_type_var = tk.StringVar(value="RPT")
+        log_combo = ttk.Combobox(log_pick_frame, textvariable=self.log_type_var,
+                                  values=["RPT", "Script", "LBmaster", "ADM"], width=12, state="readonly")
+        log_combo.pack(side="left")
+        log_combo.bind("<<ComboboxSelected>>", lambda e: self._load_log())
+        ttk.Button(log_pick_frame, text="Refresh", command=self._load_log).pack(side="left", padx=8)
+
+        self.srv_log = scrolledtext.ScrolledText(log_frame, width=52, height=22, bg="#111111", fg="#d4d4d4",
+                                                  font=("Consolas", 8), state="disabled", relief="flat")
+        self.srv_log.pack(fill="both", expand=True, pady=(4, 0))
+
+        f.columnconfigure(1, weight=1)
+
+    def _load_server_mods(self):
+        import json
+        all_mods = sorted([
+            d for d in os.listdir(LOCAL_SERVER)
+            if d.startswith("@") and os.path.isdir(os.path.join(LOCAL_SERVER, d))
+        ], key=lambda x: x.lstrip("@").lower())
+
+        saved = {}
+        if os.path.exists(self._selections_file):
+            try:
+                with open(self._selections_file, "r") as f:
+                    saved = json.load(f)
+            except Exception:
+                pass
+
+        # Get currently active mods from start.bat
+        active = set()
+        try:
+            with open(START_BAT, "r", encoding="utf-8") as f:
+                content = f.read()
+            match = re.search(r'"-mod=([^"]*)"', content)
+            if match:
+                active = set(m.strip() for m in match.group(1).split(";") if m.strip())
+        except Exception:
+            pass
+
+        self._all_server_mods = all_mods
+        for widget in self.mod_check_frame.winfo_children():
+            widget.destroy()
+        self._mod_check_vars = {}
+
+        for mod in all_mods:
+            var = tk.BooleanVar(value=saved.get(mod, mod in active))
+            self._mod_check_vars[mod] = var
+
+        self._render_server_mod_checkboxes(all_mods)
+
+    def _render_server_mod_checkboxes(self, mods):
+        for widget in self.mod_check_frame.winfo_children():
+            widget.destroy()
+        for mod in mods:
+            var = self._mod_check_vars[mod]
+            cb = ttk.Checkbutton(self.mod_check_frame, text=mod, variable=var,
+                                 command=self._save_mod_selections)
+            cb.pack(anchor="w", padx=4)
+            cb.bind("<MouseWheel>", lambda e: self._mod_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+    def _filter_server_mods(self, *args):
+        if not hasattr(self, "_all_server_mods"):
+            return
+        typed = self._srv_search_var.get().lower()
+        if not typed or typed == "search mods...":
+            filtered = self._all_server_mods
+        else:
+            filtered = [m for m in self._all_server_mods if typed in m.lower()]
+        self._render_server_mod_checkboxes(filtered)
+
+    def _save_mod_selections(self):
+        import json
+        data = {mod: var.get() for mod, var in self._mod_check_vars.items()}
+        with open(self._selections_file, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def _start_server(self):
+        if self._server_proc and self._server_proc.poll() is None:
+            return
+
+        # Build mod list from checkboxes
+        selected = [mod for mod, var in self._mod_check_vars.items() if var.get()]
+        mod_str = ";".join(selected)
+
+        # Patch start.bat
+        try:
+            with open(START_BAT, "r", encoding="utf-8") as f:
+                content = f.read()
+            new_content = re.sub(r'"-mod=[^"]*"', f'"-mod={mod_str}"', content)
+            with open(START_BAT, "w", encoding="utf-8") as f:
+                f.write(new_content)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not patch start.bat: {e}")
+            return
+
+        self._server_proc = subprocess.Popen(
+            [os.path.join(LOCAL_SERVER, "DayZServer_x64.exe"),
+             "-config=serverDZ.cfg", "-port=2302", "-cpuCount=2",
+             "-dologs", "-adminlog", "-netlog", "-freezecheck",
+             "-profiles=Profiles", f"-mod={mod_str}"],
+            cwd=LOCAL_SERVER,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        self.srv_start_btn.configure(state="disabled")
+        self.srv_stop_btn.configure(state="normal")
+        self.srv_status_lbl.configure(text="● Running", foreground="#4ec94e")
+
+        self.srv_log.configure(state="normal")
+        self.srv_log.delete("1.0", "end")
+        self.srv_log.configure(state="disabled")
+
+        threading.Thread(target=self._stream_server_output, daemon=True).start()
+        self._poll_server()
+
+    def _stream_server_output(self):
+        try:
+            for line in iter(self._server_proc.stdout.readline, b""):
+                decoded = line.decode("utf-8", errors="replace").rstrip()
+                if decoded:
+                    self.srv_log.configure(state="normal")
+                    self.srv_log.insert("end", decoded + "\n")
+                    self.srv_log.see("end")
+                    self.srv_log.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _poll_server(self):
+        if self._server_proc and self._server_proc.poll() is not None:
+            code = self._server_proc.returncode
+            self.srv_start_btn.configure(state="normal")
+            self.srv_stop_btn.configure(state="disabled")
+            if code == 0:
+                self.srv_status_lbl.configure(text="● Stopped", foreground="#f44747")
+            else:
+                self.srv_status_lbl.configure(text=f"● Crashed (exit {code})", foreground="#f44747")
+                self.srv_log.configure(state="normal")
+                self.srv_log.insert("end", f"\n[SERVER EXITED WITH CODE {code}]\n")
+                self.srv_log.see("end")
+                self.srv_log.configure(state="disabled")
+        else:
+            self.after(3000, self._poll_server)
+
+    def _stop_server(self):
+        if self._server_proc:
+            self._server_proc.terminate()
+            try:
+                self._server_proc.wait(timeout=10)
+            except Exception:
+                self._server_proc.kill()
+        subprocess.run(["taskkill", "/im", "DayZServer_x64.exe", "/F"], capture_output=True)
+        self.srv_start_btn.configure(state="normal")
+        self.srv_stop_btn.configure(state="disabled")
+        self.srv_status_lbl.configure(text="● Stopped", foreground="#f44747")
+
+    def _ensure_start_bat(self):
+        if not os.path.exists(START_BAT):
+            self._generate_start_bat()
+
+    def _generate_start_bat(self, name="brnz local", port="2302", config="serverDZ.cfg", cpu="2"):
+        content = f"""@echo off
+:start
+::Server name (This is just for the bat file)
+set serverName={name}
+::Server files location
+set serverLocation="C:\\Program Files (x86)\\Steam\\steamapps\\common\\DayZServer"
+::Server Port
+set serverPort={port}
+::Server config
+set serverConfig={config}
+::Logical CPU cores to use (Equal or less than available)
+set serverCPU={cpu}
+::Sets title for terminal (DONT edit)
+title %serverName% batch
+::DayZServer location (DONT edit)
+cd "%serverLocation%"
+echo (%time%) %serverName% started.
+::Launch parameters (edit end: -config=|-port=|-profiles=|-doLogs|-adminLog|-netLog|-freezeCheck|-filePatching|-BEpath=|-cpuCount=)
+start "DayZ Server" /min "DayZServer_x64.exe" -config=%serverConfig% -port=%serverPort% -cpuCount=%serverCPU% -dologs -adminlog -netlog -freezecheck "-profiles=Profiles" "-mod="
+::Time in seconds before kill server process (14400 = 4 hours)
+timeout 14390
+taskkill /im DayZServer_x64.exe /F
+::Time in seconds to wait before..
+timeout 10
+::Go back to the top and repeat the whole cycle again
+goto start
+"""
+        with open(START_BAT, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def _edit_params_dialog(self):
+        # Read current values from start.bat
+        params = {"serverName": "", "serverPort": "", "serverConfig": "", "serverCPU": ""}
+        try:
+            with open(START_BAT, "r", encoding="utf-8") as f:
+                for line in f:
+                    for key in params:
+                        m = re.match(rf"set {key}=(.+)", line.strip())
+                        if m:
+                            params[key] = m.group(1).strip()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not read start.bat: {e}")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Server Parameters")
+        dialog.configure(bg="#1e1e1e")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        labels = {"serverName": "Server Name", "serverPort": "Port", "serverConfig": "Config file", "serverCPU": "CPU Cores"}
+        vars_ = {}
+        for i, (key, label) in enumerate(labels.items()):
+            ttk.Label(dialog, text=label).grid(row=i, column=0, padx=12, pady=6, sticky="w")
+            var = tk.StringVar(value=params[key])
+            vars_[key] = var
+            tk.Entry(dialog, textvariable=var, width=28,
+                     bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                     relief="flat", font=("Segoe UI", 10)).grid(row=i, column=1, padx=12, pady=6)
+
+        def save():
+            try:
+                with open(START_BAT, "r", encoding="utf-8") as f:
+                    content = f.read()
+                for key, var in vars_.items():
+                    content = re.sub(rf"(set {key}=).+", rf"\g<1>{var.get().strip()}", content)
+                with open(START_BAT, "w", encoding="utf-8") as f:
+                    f.write(content)
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not save: {e}", parent=dialog)
+
+        def regenerate():
+            if messagebox.askyesno("Regenerate", "This will replace start.bat with a clean default. Current mod selections will be cleared from it. Continue?", parent=dialog):
+                self._generate_start_bat(
+                    name=vars_["serverName"].get().strip(),
+                    port=vars_["serverPort"].get().strip(),
+                    config=vars_["serverConfig"].get().strip(),
+                    cpu=vars_["serverCPU"].get().strip()
+                )
+                dialog.destroy()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.grid(row=len(labels), column=0, columnspan=2, pady=(4, 12))
+        ttk.Button(btn_frame, text="Save", command=save).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Regenerate start.bat", command=regenerate).pack(side="left", padx=6)
+
+    def _edit_server_cfg_dialog(self):
+        cfg_path = os.path.join(LOCAL_SERVER, "serverDZ.cfg")
+        if not os.path.exists(cfg_path):
+            messagebox.showerror("Error", "serverDZ.cfg not found.")
+            return
+
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+
+        # Parse key = value lines (skip class blocks and comments)
+        parsed = []
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//") or stripped.startswith("class") or stripped.startswith("{") or stripped.startswith("}"):
+                continue
+            m = re.match(r'^(\w+)\s*=\s*(.+?)(?:\s*;)?(?:\s*//.*)?$', stripped)
+            if m:
+                parsed.append([m.group(1), m.group(2).strip()])
+
+        dialog = tk.Toplevel(self)
+        dialog.title("serverDZ.cfg Editor")
+        dialog.configure(bg="#1e1e1e")
+        dialog.resizable(False, True)
+        dialog.grab_set()
+
+        # Scrollable rows
+        container = ttk.Frame(dialog)
+        container.pack(fill="both", expand=True, padx=12, pady=(12, 4))
+
+        canvas = tk.Canvas(container, bg="#1e1e1e", highlightthickness=0, width=500, height=400)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="left", fill="y")
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        rows_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=rows_frame, anchor="nw")
+        rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        row_data = []  # list of (key_var, val_var, frame)
+
+        def add_row(key="", val=""):
+            rf = ttk.Frame(rows_frame)
+            rf.pack(fill="x", pady=2)
+            k = tk.StringVar(value=key)
+            v = tk.StringVar(value=val)
+            tk.Entry(rf, textvariable=k, width=22, bg="#3a3a3a", fg="#d4d4d4",
+                     insertbackground="#d4d4d4", relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+            tk.Entry(rf, textvariable=v, width=22, bg="#3a3a3a", fg="#d4d4d4",
+                     insertbackground="#d4d4d4", relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+            entry = (k, v, rf)
+            row_data.append(entry)
+            def do_remove(r=rf):
+                idx = next((i for i, x in enumerate(row_data) if x[2] == r), None)
+                if idx is not None:
+                    row_data.pop(idx)
+                r.destroy()
+            ttk.Button(rf, text="✕", width=3, command=do_remove).pack(side="left")
+
+        ttk.Label(rows_frame, text="Key", width=22, anchor="w").pack(side="top") if False else None
+        hdr = ttk.Frame(rows_frame)
+        hdr.pack(fill="x", pady=(0, 4))
+        ttk.Label(hdr, text="Key", width=24, anchor="w").pack(side="left")
+        ttk.Label(hdr, text="Value", width=24, anchor="w").pack(side="left")
+
+        for key, val in parsed:
+            add_row(key, val)
+
+        # Bottom buttons
+        bot = ttk.Frame(dialog)
+        bot.pack(fill="x", padx=12, pady=(4, 12))
+        ttk.Button(bot, text="+ Add", command=lambda: add_row()).pack(side="left", padx=(0, 6))
+
+        def save():
+            # Rebuild file preserving class Missions block
+            lines = []
+            for k_var, v_var, _ in row_data:
+                k = k_var.get().strip()
+                v = v_var.get().strip()
+                if k:
+                    lines.append(f'{k} = {v};')
+
+            # Append the Missions class block from original
+            missions_match = re.search(r'(class Missions.*)', raw, re.DOTALL)
+            missions_block = "\n" + missions_match.group(1) if missions_match else ""
+
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + missions_block + "\n")
+            dialog.destroy()
+
+        ttk.Button(bot, text="Save", command=save).pack(side="left", padx=(0, 6))
+        ttk.Button(bot, text="Cancel", command=dialog.destroy).pack(side="left")
+
+    def _load_log(self):
+        log_type = self.log_type_var.get()
+        profiles = os.path.join(LOCAL_SERVER, "Profiles")
+        target = None
+
+        try:
+            all_files = os.listdir(profiles)
+            if log_type == "RPT":
+                candidates = sorted([f for f in all_files if f.endswith(".RPT")])
+            elif log_type == "Script":
+                candidates = sorted([f for f in all_files if f.startswith("script_") and f.endswith(".log")])
+            elif log_type == "LBmaster":
+                candidates = sorted([f for f in all_files if f.startswith("LBmaster_") and f.endswith(".log")])
+            elif log_type == "ADM":
+                candidates = sorted([f for f in all_files if f.endswith(".ADM")])
+            else:
+                candidates = []
+
+            if candidates:
+                target = os.path.join(profiles, candidates[-1])
+        except Exception as e:
+            return
+
+        self.srv_log.configure(state="normal")
+        self.srv_log.delete("1.0", "end")
+        if target and os.path.exists(target):
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                self.srv_log.insert("end", content)
+                self.srv_log.see("end")
+            except Exception as e:
+                self.srv_log.insert("end", f"Could not read log: {e}")
+        else:
+            self.srv_log.insert("end", "No log file found.")
+        self.srv_log.configure(state="disabled")
 
 
 if __name__ == "__main__":
