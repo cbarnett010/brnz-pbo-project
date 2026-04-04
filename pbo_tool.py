@@ -383,18 +383,29 @@ class PBOTool(tk.Tk):
         ttk.Radiobutton(type_frame, text="Mural", variable=self.shop_type_var, value="mural").pack(side="left")
 
         # Internal name (folder/classname)
-        ttk.Label(f, text="Name (no spaces)").grid(row=3, column=0, sticky="w", **pad)
+        ttk.Label(f, text="Name").grid(row=3, column=0, sticky="w", **pad)
+        name_frame = ttk.Frame(f)
+        name_frame.grid(row=3, column=1, sticky="w", **pad)
         self.shop_name_var = tk.StringVar()
-        tk.Entry(f, textvariable=self.shop_name_var, width=30,
+        tk.Entry(name_frame, textvariable=self.shop_name_var, width=20,
                  bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
-                 relief="flat", font=("Segoe UI", 10)).grid(row=3, column=1, sticky="w", **pad)
+                 relief="flat", font=("Segoe UI", 10)).pack(side="left", padx=(0, 6))
+        self.shop_name_hint = ttk.Label(name_frame, text="→ TFSHOP_flag_???", foreground="#888888", font=("Segoe UI", 9))
+        self.shop_name_hint.pack(side="left")
+        self.shop_type_var.trace_add("write", self._update_shop_hints)
+        self.shop_name_var.trace_add("write", self._update_shop_hints)
 
         # Display name
         ttk.Label(f, text="Display name").grid(row=4, column=0, sticky="w", **pad)
+        display_frame = ttk.Frame(f)
+        display_frame.grid(row=4, column=1, sticky="w", **pad)
         self.shop_display_var = tk.StringVar()
-        tk.Entry(f, textvariable=self.shop_display_var, width=30,
+        tk.Entry(display_frame, textvariable=self.shop_display_var, width=20,
                  bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
-                 relief="flat", font=("Segoe UI", 10)).grid(row=4, column=1, sticky="w", **pad)
+                 relief="flat", font=("Segoe UI", 10)).pack(side="left", padx=(0, 6))
+        self.shop_display_hint = ttk.Label(display_frame, text='→ "TF Flag - ???"', foreground="#888888", font=("Segoe UI", 9))
+        self.shop_display_hint.pack(side="left")
+        self.shop_display_var.trace_add("write", self._update_shop_hints)
 
         # Image picker
         ttk.Label(f, text="Image (PNG)").grid(row=5, column=0, sticky="w", **pad)
@@ -417,6 +428,13 @@ class PBOTool(tk.Tk):
         self.shop_log.tag_config("ok",  foreground="#4ec94e")
         self.shop_log.tag_config("err", foreground="#f44747")
         self.shop_log.tag_config("inf", foreground="#9cdcfe")
+
+    def _update_shop_hints(self, *args):
+        kind    = self.shop_type_var.get()
+        name    = self.shop_name_var.get().strip() or "???"
+        display = self.shop_display_var.get().strip() or "???"
+        self.shop_name_hint.configure(text=f"→ TFSHOP_{kind}_{name}")
+        self.shop_display_hint.configure(text=f'→ "TF {kind.capitalize()} - {display}"')
 
     def _browse_image(self):
         path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
@@ -738,7 +756,7 @@ class CfgVehicles
         ttk.Label(log_pick_frame, text="Log:").pack(side="left", padx=(0, 6))
         self.log_type_var = tk.StringVar(value="RPT")
         log_combo = ttk.Combobox(log_pick_frame, textvariable=self.log_type_var,
-                                  values=["RPT", "Script", "LBmaster", "ADM"], width=12, state="readonly")
+                                  values=["RPT", "Script", "LBmaster", "ADM", "Crash"], width=12, state="readonly")
         log_combo.pack(side="left")
         log_combo.bind("<<ComboboxSelected>>", lambda e: self._load_log())
         ttk.Button(log_pick_frame, text="Refresh", command=self._load_log).pack(side="left", padx=8)
@@ -831,15 +849,18 @@ class CfgVehicles
             messagebox.showerror("Error", f"Could not patch start.bat: {e}")
             return
 
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 6  # SW_MINIMIZE
+
         self._server_proc = subprocess.Popen(
             [os.path.join(LOCAL_SERVER, "DayZServer_x64.exe"),
              "-config=serverDZ.cfg", "-port=2302", "-cpuCount=2",
              "-dologs", "-adminlog", "-netlog", "-freezecheck",
              "-profiles=Profiles", f"-mod={mod_str}"],
             cwd=LOCAL_SERVER,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW
+            stdin=subprocess.DEVNULL,
+            startupinfo=si
         )
         self.srv_start_btn.configure(state="disabled")
         self.srv_stop_btn.configure(state="normal")
@@ -849,23 +870,48 @@ class CfgVehicles
         self.srv_log.delete("1.0", "end")
         self.srv_log.configure(state="disabled")
 
-        threading.Thread(target=self._stream_server_output, daemon=True).start()
+        self._rpt_tail_active = True
+        threading.Thread(target=self._tail_rpt_live, daemon=True).start()
         self._poll_server()
 
-    def _stream_server_output(self):
-        try:
-            for line in iter(self._server_proc.stdout.readline, b""):
-                decoded = line.decode("utf-8", errors="replace").rstrip()
-                if decoded:
+    def _tail_rpt_live(self):
+        import time, glob
+        profiles = os.path.join(LOCAL_SERVER, "Profiles")
+
+        # Wait up to 20s for a new RPT to appear
+        rpt_path = None
+        before = set(glob.glob(os.path.join(profiles, "*.RPT")))
+        for _ in range(40):
+            time.sleep(0.5)
+            after = set(glob.glob(os.path.join(profiles, "*.RPT")))
+            new = after - before
+            if new:
+                rpt_path = sorted(new, key=os.path.getmtime)[-1]
+                break
+
+        if not rpt_path:
+            # fallback to most recent
+            all_rpts = sorted(glob.glob(os.path.join(profiles, "*.RPT")), key=os.path.getmtime)
+            if all_rpts:
+                rpt_path = all_rpts[-1]
+
+        if not rpt_path:
+            return
+
+        with open(rpt_path, "r", encoding="utf-8", errors="replace") as f:
+            while self._rpt_tail_active:
+                line = f.readline()
+                if line:
                     self.srv_log.configure(state="normal")
-                    self.srv_log.insert("end", decoded + "\n")
+                    self.srv_log.insert("end", line)
                     self.srv_log.see("end")
                     self.srv_log.configure(state="disabled")
-        except Exception:
-            pass
+                else:
+                    time.sleep(0.2)
 
     def _poll_server(self):
         if self._server_proc and self._server_proc.poll() is not None:
+            self._rpt_tail_active = False
             code = self._server_proc.returncode
             self.srv_start_btn.configure(state="normal")
             self.srv_stop_btn.configure(state="disabled")
@@ -881,6 +927,7 @@ class CfgVehicles
             self.after(3000, self._poll_server)
 
     def _stop_server(self):
+        self._rpt_tail_active = False
         if self._server_proc:
             self._server_proc.terminate()
             try:
@@ -1094,6 +1141,14 @@ goto start
                 candidates = sorted([f for f in all_files if f.startswith("LBmaster_") and f.endswith(".log")])
             elif log_type == "ADM":
                 candidates = sorted([f for f in all_files if f.endswith(".ADM")])
+            elif log_type == "Crash":
+                candidates = sorted([f for f in all_files if "crash" in f.lower() and f.endswith(".log")])
+                if not candidates:
+                    self.srv_log.configure(state="normal")
+                    self.srv_log.delete("1.0", "end")
+                    self.srv_log.insert("end", "No crash log found.")
+                    self.srv_log.configure(state="disabled")
+                    return
             else:
                 candidates = []
 
