@@ -116,9 +116,13 @@ class PBOTool(tk.Tk):
 
         ttk.Separator(self, orient="horizontal").grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=6)
 
-        # Build button
-        self.build_btn = ttk.Button(self, text="Build", command=self._run)
-        self.build_btn.grid(row=7, column=0, columnspan=2, pady=4)
+        # Buttons
+        btn_frame = ttk.Frame(self)
+        btn_frame.grid(row=7, column=0, columnspan=2, pady=4)
+        self.build_btn = ttk.Button(btn_frame, text="Build", command=self._run)
+        self.build_btn.pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="New Mod", command=self._new_mod_dialog).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Open Publisher", command=self._open_publisher).pack(side="left", padx=6)
 
         # Log
         self.log = scrolledtext.ScrolledText(self, width=62, height=14, bg="#111111", fg="#d4d4d4",
@@ -343,6 +347,88 @@ class PBOTool(tk.Tk):
                 self._log(f"Sign failed: {result.stderr.strip()}", "err")
         except subprocess.TimeoutExpired:
             self._log("DSSignFile timed out.", "err")
+
+
+    # ── Publisher ─────────────────────────────────────────────────────────────
+    def _open_publisher(self):
+        try:
+            subprocess.Popen([r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\Publisher\Publisher.exe"])
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open Publisher: {e}")
+
+    # ── New Mod ───────────────────────────────────────────────────────────────
+    def _new_mod_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("New Mod")
+        dialog.configure(bg="#1e1e1e")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Mod name:").grid(row=0, column=0, padx=12, pady=(14, 6), sticky="w")
+        name_var = tk.StringVar()
+        entry = tk.Entry(dialog, textvariable=name_var, width=30,
+                         bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                         relief="flat", font=("Segoe UI", 10))
+        entry.grid(row=0, column=1, padx=12, pady=(14, 6))
+        entry.focus()
+
+        def confirm():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("No name", "Enter a mod name.", parent=dialog)
+                return
+            mod_path = os.path.join(MODS_SOURCE, name)
+            if os.path.exists(mod_path):
+                messagebox.showwarning("Already exists", f"{name} already exists in P:\\", parent=dialog)
+                return
+            dialog.destroy()
+            self._create_mod(name)
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.grid(row=1, column=0, columnspan=2, pady=(4, 12))
+        ttk.Button(btn_frame, text="Create", command=confirm).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        entry.bind("<Return>", lambda e: confirm())
+
+    def _create_mod(self, name):
+        mod_path = os.path.join(MODS_SOURCE, name)
+        try:
+            os.makedirs(os.path.join(mod_path, "data"))
+            os.makedirs(os.path.join(mod_path, "scripts", "3_Game"))
+            os.makedirs(os.path.join(mod_path, "scripts", "4_World"))
+            os.makedirs(os.path.join(mod_path, "scripts", "5_Mission"))
+
+            with open(r"P:\zzzzNewconfig.cpp", "r", encoding="utf-8") as f:
+                template = f.read()
+
+            config = template
+            # Replace requiredAddons placeholder first (pure * with no TF_ prefix)
+            config = re.sub(r'"\*+"', '"DayZGame"', config)
+            # Replace all TF_** patterns (class names, dir, files[] paths, etc.)
+            config = re.sub(r'TF_\*+', name, config)
+
+            config_path = os.path.join(mod_path, "config.cpp")
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(config)
+
+            self._log(f"Created mod: {name}", "ok")
+            self._log(f"  P:\\{name}\\config.cpp", "inf")
+            self._log(f"  P:\\{name}\\data\\", "inf")
+            self._log(f"  P:\\{name}\\scripts\\3_Game\\", "inf")
+            self._log(f"  P:\\{name}\\scripts\\4_World\\", "inf")
+            self._log(f"  P:\\{name}\\scripts\\5_Mission\\", "inf")
+
+            # Refresh mod list and select new mod
+            self._populate_mods()
+            if name in self._all_mods:
+                idx = self._all_mods.index(name)
+                self.mod_listbox.selection_clear(0, "end")
+                self.mod_listbox.selection_set(idx)
+                self.mod_listbox.see(idx)
+                self.mod_var.set(name)
+
+        except Exception as e:
+            self._log(f"Failed to create mod: {e}", "err")
 
 
 if __name__ == "__main__":
