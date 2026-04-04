@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, filedialog
 import subprocess
 import os
 import shutil
@@ -27,6 +27,9 @@ MODPACKS = {
     "Vehicles": ("TheFactoryVehicles", "TheFactoryVehiclesTest", "vehicles"),
 }
 
+TF_SHOP         = r"P:\TF_Shop"
+IMAGE_TO_PAA    = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\ImageToPAA\ImageToPAA.exe"
+
 
 # ── Main App ─────────────────────────────────────────────────────────────────
 class PBOTool(tk.Tk):
@@ -49,19 +52,29 @@ class PBOTool(tk.Tk):
         style.configure("Success.TLabel", background="#1e1e1e", foreground="#4ec94e", font=("Segoe UI", 10))
         style.configure("Error.TLabel",   background="#1e1e1e", foreground="#f44747", font=("Segoe UI", 10))
 
-        self._build_ui()
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self.tab_pbo = ttk.Frame(notebook)
+        self.tab_shop = ttk.Frame(notebook)
+        notebook.add(self.tab_pbo,  text="  PBO Builder  ")
+        notebook.add(self.tab_shop, text="  Flag / Mural  ")
+
+        self._build_pbo_tab()
+        self._build_shop_tab()
         self._populate_mods()
 
-    def _build_ui(self):
+    def _build_pbo_tab(self):
         pad = {"padx": 12, "pady": 6}
+        f = self.tab_pbo
 
         # Header
-        ttk.Label(self, text="brnz PBO Project", style="Header.TLabel").grid(row=0, column=0, columnspan=2, pady=(14, 4), padx=12, sticky="w")
-        ttk.Separator(self, orient="horizontal").grid(row=1, column=0, columnspan=2, sticky="ew", padx=12)
+        ttk.Label(f, text="brnz PBO Project", style="Header.TLabel").grid(row=0, column=0, columnspan=2, pady=(14, 4), padx=12, sticky="w")
+        ttk.Separator(f, orient="horizontal").grid(row=1, column=0, columnspan=2, sticky="ew", padx=12)
 
         # Mod selector with search
-        ttk.Label(self, text="Mod (P:\\)").grid(row=2, column=0, sticky="nw", **pad)
-        mod_frame = ttk.Frame(self)
+        ttk.Label(f, text="Mod (P:\\)").grid(row=2, column=0, sticky="nw", **pad)
+        mod_frame = ttk.Frame(f)
         mod_frame.grid(row=2, column=1, sticky="w", **pad)
 
         self.search_var = tk.StringVar()
@@ -86,8 +99,8 @@ class PBOTool(tk.Tk):
         self.mod_var = tk.StringVar()
 
         # Destination
-        ttk.Label(self, text="Destination").grid(row=3, column=0, sticky="nw", **pad)
-        dest_frame = ttk.Frame(self)
+        ttk.Label(f, text="Destination").grid(row=3, column=0, sticky="nw", **pad)
+        dest_frame = ttk.Frame(f)
         dest_frame.grid(row=3, column=1, sticky="w", **pad)
 
         self.dest_var = tk.StringVar(value="local")
@@ -95,7 +108,7 @@ class PBOTool(tk.Tk):
             ttk.Radiobutton(dest_frame, text=text, variable=self.dest_var, value=val, command=self._on_dest_change).pack(anchor="w")
 
         # Pack selector (staging/modpack)
-        self.pack_frame = ttk.Frame(self)
+        self.pack_frame = ttk.Frame(f)
         self.pack_frame.grid(row=4, column=0, columnspan=2, sticky="w", padx=12, pady=2)
         ttk.Label(self.pack_frame, text="Modpack").pack(side="left", padx=(0, 8))
         self.pack_var = tk.StringVar(value="Core")
@@ -108,16 +121,16 @@ class PBOTool(tk.Tk):
         self.pack_frame.grid_remove()
 
         # Sign checkbox (staging/modpack only)
-        self.sign_frame = ttk.Frame(self)
+        self.sign_frame = ttk.Frame(f)
         self.sign_frame.grid(row=5, column=0, columnspan=2, sticky="w", padx=12, pady=2)
         self.sign_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(self.sign_frame, text="Sign PBO after packing", variable=self.sign_var).pack(anchor="w")
         self.sign_frame.grid_remove()
 
-        ttk.Separator(self, orient="horizontal").grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=6)
+        ttk.Separator(f, orient="horizontal").grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=6)
 
         # Buttons
-        btn_frame = ttk.Frame(self)
+        btn_frame = ttk.Frame(f)
         btn_frame.grid(row=7, column=0, columnspan=2, pady=4)
         self.build_btn = ttk.Button(btn_frame, text="Build", command=self._run)
         self.build_btn.pack(side="left", padx=6)
@@ -125,7 +138,7 @@ class PBOTool(tk.Tk):
         ttk.Button(btn_frame, text="Open Publisher", command=self._open_publisher).pack(side="left", padx=6)
 
         # Log
-        self.log = scrolledtext.ScrolledText(self, width=62, height=14, bg="#111111", fg="#d4d4d4",
+        self.log = scrolledtext.ScrolledText(f, width=62, height=14, bg="#111111", fg="#d4d4d4",
                                              font=("Consolas", 9), state="disabled", relief="flat")
         self.log.grid(row=8, column=0, columnspan=2, padx=12, pady=(4, 12), sticky="ew")
         self.log.tag_config("ok",  foreground="#4ec94e")
@@ -348,6 +361,216 @@ class PBOTool(tk.Tk):
         except subprocess.TimeoutExpired:
             self._log("DSSignFile timed out.", "err")
 
+
+    # ── Flag / Mural Tab ─────────────────────────────────────────────────────
+    def _build_shop_tab(self):
+        f = self.tab_shop
+        pad = {"padx": 12, "pady": 6}
+
+        ttk.Label(f, text="Flag / Mural Creator", style="Header.TLabel").grid(row=0, column=0, columnspan=2, pady=(14, 4), padx=12, sticky="w")
+        ttk.Separator(f, orient="horizontal").grid(row=1, column=0, columnspan=2, sticky="ew", padx=12)
+
+        # Type toggle
+        ttk.Label(f, text="Type").grid(row=2, column=0, sticky="w", **pad)
+        type_frame = ttk.Frame(f)
+        type_frame.grid(row=2, column=1, sticky="w", **pad)
+        self.shop_type_var = tk.StringVar(value="flag")
+        ttk.Radiobutton(type_frame, text="Flag",  variable=self.shop_type_var, value="flag").pack(side="left", padx=(0, 12))
+        ttk.Radiobutton(type_frame, text="Mural", variable=self.shop_type_var, value="mural").pack(side="left")
+
+        # Internal name (folder/classname)
+        ttk.Label(f, text="Name (no spaces)").grid(row=3, column=0, sticky="w", **pad)
+        self.shop_name_var = tk.StringVar()
+        tk.Entry(f, textvariable=self.shop_name_var, width=30,
+                 bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                 relief="flat", font=("Segoe UI", 10)).grid(row=3, column=1, sticky="w", **pad)
+
+        # Display name
+        ttk.Label(f, text="Display name").grid(row=4, column=0, sticky="w", **pad)
+        self.shop_display_var = tk.StringVar()
+        tk.Entry(f, textvariable=self.shop_display_var, width=30,
+                 bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                 relief="flat", font=("Segoe UI", 10)).grid(row=4, column=1, sticky="w", **pad)
+
+        # Image picker
+        ttk.Label(f, text="Image (PNG)").grid(row=5, column=0, sticky="w", **pad)
+        img_frame = ttk.Frame(f)
+        img_frame.grid(row=5, column=1, sticky="w", **pad)
+        self.shop_img_var = tk.StringVar()
+        tk.Entry(img_frame, textvariable=self.shop_img_var, width=26,
+                 bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                 relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+        ttk.Button(img_frame, text="Browse", command=self._browse_image).pack(side="left")
+
+        ttk.Separator(f, orient="horizontal").grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=6)
+
+        self.shop_create_btn = ttk.Button(f, text="Create", command=self._run_shop)
+        self.shop_create_btn.grid(row=7, column=0, columnspan=2, pady=4)
+
+        self.shop_log = scrolledtext.ScrolledText(f, width=62, height=10, bg="#111111", fg="#d4d4d4",
+                                                  font=("Consolas", 9), state="disabled", relief="flat")
+        self.shop_log.grid(row=8, column=0, columnspan=2, padx=12, pady=(4, 12), sticky="ew")
+        self.shop_log.tag_config("ok",  foreground="#4ec94e")
+        self.shop_log.tag_config("err", foreground="#f44747")
+        self.shop_log.tag_config("inf", foreground="#9cdcfe")
+
+    def _browse_image(self):
+        path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
+        if path:
+            self.shop_img_var.set(path)
+
+    def _slog(self, msg, tag=""):
+        self.shop_log.configure(state="normal")
+        self.shop_log.insert("end", msg + "\n", tag)
+        self.shop_log.see("end")
+        self.shop_log.configure(state="disabled")
+
+    def _run_shop(self):
+        name     = self.shop_name_var.get().strip().lower().replace(" ", "_")
+        display  = self.shop_display_var.get().strip()
+        img_path = self.shop_img_var.get().strip()
+        kind     = self.shop_type_var.get()
+
+        if not name:
+            messagebox.showwarning("Missing", "Enter a name.", parent=self.tab_shop)
+            return
+        if not display:
+            messagebox.showwarning("Missing", "Enter a display name.", parent=self.tab_shop)
+            return
+        if not img_path or not os.path.isfile(img_path):
+            messagebox.showwarning("Missing", "Select a valid image file.", parent=self.tab_shop)
+            return
+
+        self.shop_create_btn.configure(state="disabled")
+        self.shop_log.configure(state="normal")
+        self.shop_log.delete("1.0", "end")
+        self.shop_log.configure(state="disabled")
+        threading.Thread(target=self._create_shop_item, args=(name, display, img_path, kind), daemon=True).start()
+
+    def _create_shop_item(self, name, display, img_path, kind):
+        try:
+            subdir  = os.path.join(TF_SHOP, "data", f"{kind}s", name)
+            paa_name = f"{name}.paa"
+            paa_path = os.path.join(subdir, paa_name)
+            class_name = f"TFSHOP_{kind}_{name}"
+            texture_path = f"TF_Shop\\data\\{kind}s\\{name}\\{paa_name}"
+
+            if os.path.exists(subdir):
+                self._slog(f"Folder already exists: {subdir}", "err")
+                return
+
+            self._slog(f"Creating {subdir}...", "inf")
+            os.makedirs(subdir)
+
+            # Copy image
+            img_ext = os.path.splitext(img_path)[1]
+            shutil.copy2(img_path, os.path.join(subdir, f"{name}{img_ext}"))
+
+            # Convert to PAA
+            self._slog("Converting to PAA...", "inf")
+            result = subprocess.run([IMAGE_TO_PAA, img_path, paa_path], capture_output=True, text=True, timeout=60)
+            if not os.path.exists(paa_path):
+                self._slog(f"PAA conversion failed: {result.stderr.strip()}", "err")
+                return
+            self._slog("PAA created.", "ok")
+
+            # Delete the copied source image
+            src_copy = os.path.join(subdir, f"{name}{img_ext}")
+            if os.path.exists(src_copy):
+                os.remove(src_copy)
+
+            # Write config.cpp
+            if kind == "flag":
+                config = f"""class CfgPatches
+{{
+\tclass {class_name}
+\t{{
+\t\tunits[]={{
+            {class_name}
+        }};
+\t\tweapons[]={{}};
+\t\trequiredVersion=0.1;
+\t\trequiredAddons[]=
+\t\t{{
+\t\t\t"DZ_Characters",
+            "DZ_Data"
+\t\t}};
+\t}};
+}};
+class CfgVehicles
+{{
+    class Flag_Base;
+    class {class_name}: Flag_Base
+    {{
+    \tscope=2;
+\t\tdisplayname = "TF Flag - {display}";
+\t\tdescriptionShort = "A Customized Flag made for {display}";
+        hiddenSelections[]=
+\t    {{
+\t    \t"camo"
+\t    }};
+    \thiddenSelectionsTextures[]=
+    \t{{
+    \t\t"{texture_path}"
+    \t}};
+    \t
+    }};
+}}"""
+            else:
+                config = f"""class CfgPatches
+{{
+    class TF_Decor
+    {{
+        units[]={{
+            {class_name}
+        }};
+        weapons[] = {{}};
+        requiredVersion = 0.1;
+        requiredAddons[] = {{"RPC_Scripts","DZ_Characters","DZ_Characters_Backpacks","DZ_Characters_Pants","DZ_Characters_Tops","DZ_Gear_Containers","DZ_Characters_Headgear","DZ_Gear_Camping","DZ_Gear_Crafting","DZ_Gear_Tools","DZ_Animals","DZ_Data"
+\t\t}};
+    }};
+}};
+
+
+class CfgVehicles
+{{
+    class BBP_WallPaper_Mural;
+    class {class_name}: BBP_WallPaper_Mural
+\t{{
+\t\tscope = 2;
+\t\tdisplayName = "TF Mural - {display}";
+\t\tdescriptionShort = "A Customized Mural made for {display}";
+\t\thiddenSelectionsTextures[] = {{"{texture_path}"}};
+\t}};
+
+}};"""
+
+            with open(os.path.join(subdir, "config.cpp"), "w", encoding="utf-8") as f:
+                f.write(config)
+            self._slog("config.cpp written.", "ok")
+
+            # Update classnames.txt
+            classnames_path = os.path.join(TF_SHOP, "classnames.txt")
+            with open(classnames_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            section = "FLAGS" if kind == "flag" else "MURALS"
+            insert_after = f"{section}\n-----------------------" if kind == "flag" else f"{section}\n---------------------"
+            if insert_after in content:
+                content = content.replace(insert_after, f"{insert_after}\n{class_name}", 1)
+                with open(classnames_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                self._slog(f"Added {class_name} to classnames.txt.", "ok")
+            else:
+                self._slog("Could not find section in classnames.txt — add manually.", "err")
+
+            self._slog(f"\nDone! {class_name} created.", "ok")
+            self._slog(f"Don't forget to rebuild TF_Shop PBO.", "inf")
+
+        except Exception as e:
+            self._slog(f"Error: {e}", "err")
+        finally:
+            self.shop_create_btn.configure(state="normal")
 
     # ── Publisher ─────────────────────────────────────────────────────────────
     def _open_publisher(self):
