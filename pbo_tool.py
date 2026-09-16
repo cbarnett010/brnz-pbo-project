@@ -28,6 +28,7 @@ MODPACKS = {
 }
 
 TF_SHOP         = r"P:\TF_Shop"
+TF_LICENSEPLATES = r"P:\TF_LicensePlates"
 IMAGE_TO_PAA    = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\ImageToPAA\ImageToPAA.exe"
 
 
@@ -57,13 +58,16 @@ class PBOTool(tk.Tk):
 
         self.tab_pbo    = ttk.Frame(notebook)
         self.tab_shop   = ttk.Frame(notebook)
+        self.tab_plate  = ttk.Frame(notebook)
         self.tab_server = ttk.Frame(notebook)
         notebook.add(self.tab_pbo,    text="  PBO Builder  ")
         notebook.add(self.tab_shop,   text="  Flag / Mural  ")
+        notebook.add(self.tab_plate,  text="  License Plate  ")
         notebook.add(self.tab_server, text="  Local Server  ")
 
         self._build_pbo_tab()
         self._build_shop_tab()
+        self._build_plate_tab()
         self._build_server_tab()
         self._populate_mods()
         self._ensure_start_bat()
@@ -339,18 +343,36 @@ class PBOTool(tk.Tk):
         cmd = [ADDON_BUILDER, src, out_dir, "-clear", "-packonly"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            success = "Build Successful" in result.stdout
+
             for line in result.stdout.splitlines():
                 if any(k in line for k in ["INFO", "ERROR", "WARN"]):
                     tag = "err" if "ERROR" in line else ("ok" if "Successful" in line else "")
                     self._log(line.strip(), tag)
-            if "Build Successful" in result.stdout:
+
+            if success:
                 self._log("Pack successful.", "ok")
                 return True
-            else:
-                self._log("Pack FAILED — check log above.", "err")
-                return False
+
+            # Failure: dump everything we have so the user can actually see why
+            self._log(f"AddonBuilder exit code: {result.returncode}", "err")
+            if result.stdout.strip():
+                self._log("--- stdout ---", "inf")
+                for line in result.stdout.splitlines():
+                    if line.strip():
+                        self._log(line.rstrip())
+            if result.stderr.strip():
+                self._log("--- stderr ---", "inf")
+                for line in result.stderr.splitlines():
+                    if line.strip():
+                        self._log(line.rstrip(), "err")
+            self._log("Pack FAILED — see output above.", "err")
+            return False
         except subprocess.TimeoutExpired:
-            self._log("AddonBuilder timed out.", "err")
+            self._log("AddonBuilder timed out (120s).", "err")
+            return False
+        except Exception as e:
+            self._log(f"AddonBuilder launch failed: {e}", "err")
             return False
 
     # ── DSSignFile ────────────────────────────────────────────────────────────
@@ -593,6 +615,369 @@ class CfgVehicles
             self._slog(f"Error: {e}", "err")
         finally:
             self.shop_create_btn.configure(state="normal")
+
+    # ── License Plate Tab ─────────────────────────────────────────────────────
+    def _build_plate_tab(self):
+        f = self.tab_plate
+        pad = {"padx": 12, "pady": 6}
+
+        ttk.Label(f, text="License Plate Creator", style="Header.TLabel").grid(row=0, column=0, columnspan=2, pady=(14, 4), padx=12, sticky="w")
+        ttk.Separator(f, orient="horizontal").grid(row=1, column=0, columnspan=2, sticky="ew", padx=12)
+
+        # Internal name (folder/classname)
+        ttk.Label(f, text="Name").grid(row=2, column=0, sticky="w", **pad)
+        name_frame = ttk.Frame(f)
+        name_frame.grid(row=2, column=1, sticky="w", **pad)
+        self.plate_name_var = tk.StringVar()
+        tk.Entry(name_frame, textvariable=self.plate_name_var, width=20,
+                 bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                 relief="flat", font=("Segoe UI", 10)).pack(side="left", padx=(0, 6))
+        self.plate_name_hint = ttk.Label(name_frame, text="→ TF_LicensePlate_???", foreground="#888888", font=("Segoe UI", 9))
+        self.plate_name_hint.pack(side="left")
+        self.plate_name_var.trace_add("write", self._update_plate_hints)
+
+        # Display name
+        ttk.Label(f, text="Display name").grid(row=3, column=0, sticky="w", **pad)
+        display_frame = ttk.Frame(f)
+        display_frame.grid(row=3, column=1, sticky="w", **pad)
+        self.plate_display_var = tk.StringVar()
+        tk.Entry(display_frame, textvariable=self.plate_display_var, width=20,
+                 bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                 relief="flat", font=("Segoe UI", 10)).pack(side="left", padx=(0, 6))
+        self.plate_display_hint = ttk.Label(display_frame, text='→ "TF Plate - ???"', foreground="#888888", font=("Segoe UI", 9))
+        self.plate_display_hint.pack(side="left")
+        self.plate_display_var.trace_add("write", self._update_plate_hints)
+
+        # Image picker
+        ttk.Label(f, text="Image (PNG)").grid(row=4, column=0, sticky="w", **pad)
+        img_frame = ttk.Frame(f)
+        img_frame.grid(row=4, column=1, sticky="w", **pad)
+        self.plate_img_var = tk.StringVar()
+        tk.Entry(img_frame, textvariable=self.plate_img_var, width=26,
+                 bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                 relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+        ttk.Button(img_frame, text="Browse", command=self._browse_plate_image).pack(side="left")
+
+        # Optional normal map (NOHQ)
+        ttk.Label(f, text="Normal map (opt)").grid(row=5, column=0, sticky="w", **pad)
+        nohq_frame = ttk.Frame(f)
+        nohq_frame.grid(row=5, column=1, sticky="w", **pad)
+        self.plate_nohq_var = tk.StringVar()
+        tk.Entry(nohq_frame, textvariable=self.plate_nohq_var, width=26,
+                 bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                 relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+        ttk.Button(nohq_frame, text="Browse", command=self._browse_plate_nohq).pack(side="left")
+        ttk.Button(nohq_frame, text="Clear", command=lambda: self.plate_nohq_var.set("")).pack(side="left", padx=(4, 0))
+
+        ttk.Separator(f, orient="horizontal").grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=6)
+
+        self.plate_create_btn = ttk.Button(f, text="Create", command=self._run_plate)
+        self.plate_create_btn.grid(row=7, column=0, columnspan=2, pady=4)
+
+        self.plate_log = scrolledtext.ScrolledText(f, width=62, height=10, bg="#111111", fg="#d4d4d4",
+                                                   font=("Consolas", 9), state="disabled", relief="flat")
+        self.plate_log.grid(row=8, column=0, columnspan=2, padx=12, pady=(4, 12), sticky="ew")
+        self.plate_log.tag_config("ok",  foreground="#4ec94e")
+        self.plate_log.tag_config("err", foreground="#f44747")
+        self.plate_log.tag_config("inf", foreground="#9cdcfe")
+
+    def _update_plate_hints(self, *args):
+        name    = self.plate_name_var.get().strip() or "???"
+        display = self.plate_display_var.get().strip() or "???"
+        self.plate_name_hint.configure(text=f"→ TF_LicensePlate_{name}")
+        self.plate_display_hint.configure(text=f'→ "TF Plate - {display}"')
+
+    def _browse_plate_image(self):
+        path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg")])
+        if path:
+            self.plate_img_var.set(path)
+
+    def _browse_plate_nohq(self):
+        path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.jpg *.jpeg"), ("PAA", "*.paa")])
+        if path:
+            self.plate_nohq_var.set(path)
+
+    def _plog(self, msg, tag=""):
+        self.plate_log.configure(state="normal")
+        self.plate_log.insert("end", msg + "\n", tag)
+        self.plate_log.see("end")
+        self.plate_log.configure(state="disabled")
+
+    def _run_plate(self):
+        name      = self.plate_name_var.get().strip().lower().replace(" ", "_")
+        display   = self.plate_display_var.get().strip()
+        img_path  = self.plate_img_var.get().strip()
+        nohq_path = self.plate_nohq_var.get().strip()
+
+        if not name:
+            messagebox.showwarning("Missing", "Enter a name.", parent=self.tab_plate)
+            return
+        if not display:
+            messagebox.showwarning("Missing", "Enter a display name.", parent=self.tab_plate)
+            return
+        if not img_path or not os.path.isfile(img_path):
+            messagebox.showwarning("Missing", "Select a valid image file.", parent=self.tab_plate)
+            return
+        if nohq_path and not os.path.isfile(nohq_path):
+            messagebox.showwarning("Missing", "Normal map path is set but not a valid file.\nClear it or pick a real file.", parent=self.tab_plate)
+            return
+
+        self.plate_create_btn.configure(state="disabled")
+        self.plate_log.configure(state="normal")
+        self.plate_log.delete("1.0", "end")
+        self.plate_log.configure(state="disabled")
+        threading.Thread(target=self._create_plate_item, args=(name, display, img_path, nohq_path), daemon=True).start()
+
+    def _create_plate_item(self, name, display, img_path, nohq_path=""):
+        try:
+            subdir       = os.path.join(TF_LICENSEPLATES, "data", "plates", name)
+            paa_name     = f"{name}.paa"
+            paa_path     = os.path.join(subdir, paa_name)
+            class_name   = f"TF_LicensePlate_{name}"
+            texture_path = f"TF_LicensePlates\\data\\plates\\{name}\\{paa_name}"
+
+            if os.path.exists(subdir):
+                self._plog(f"Folder already exists: {subdir}", "err")
+                return
+
+            self._plog(f"Creating {subdir}...", "inf")
+            os.makedirs(subdir)
+
+            # Convert to PAA
+            self._plog("Converting to PAA...", "inf")
+            result = subprocess.run([IMAGE_TO_PAA, img_path, paa_path], capture_output=True, text=True, timeout=60)
+            if not os.path.exists(paa_path):
+                self._plog(f"PAA conversion failed: {result.stderr.strip()}", "err")
+                return
+            self._plog("PAA created.", "ok")
+
+            # ── Optional normal map (NOHQ) ─────────────────────────────────
+            # If supplied, write a per-plate .rvmat that uses this plate's own
+            # _co + _nohq, and override hiddenSelectionsMaterials. If left blank
+            # the plate inherits Callatic's default material (Stage1 NOHQ).
+            material_block = ""
+            if nohq_path:
+                nohq_paa_name = f"{name}_nohq.paa"
+                nohq_paa_path = os.path.join(subdir, nohq_paa_name)
+                nohq_tex_rel  = f"TF_LicensePlates\\data\\plates\\{name}\\{nohq_paa_name}"
+                rvmat_name    = f"{name}.rvmat"
+                rvmat_rel     = f"TF_LicensePlates\\data\\plates\\{name}\\{rvmat_name}"
+
+                if nohq_path.lower().endswith(".paa"):
+                    # Already a PAA — copy in as-is
+                    shutil.copy2(nohq_path, nohq_paa_path)
+                    self._plog("Normal map copied (PAA).", "ok")
+                else:
+                    # Feed ImageToPAA a *_nohq source so it packs as DXT5 (normal-map format)
+                    ext = os.path.splitext(nohq_path)[1] or ".png"
+                    tmp_src = os.path.join(subdir, f"{name}_nohq{ext}")
+                    shutil.copy2(nohq_path, tmp_src)
+                    self._plog("Converting normal map to PAA...", "inf")
+                    subprocess.run([IMAGE_TO_PAA, tmp_src, nohq_paa_path], capture_output=True, text=True, timeout=60)
+                    if os.path.exists(tmp_src):
+                        os.remove(tmp_src)
+                    if not os.path.exists(nohq_paa_path):
+                        self._plog("Normal map PAA conversion failed.", "err")
+                        return
+                    self._plog("Normal map PAA created.", "ok")
+
+                # Per-plate material referencing this plate's own _co + _nohq
+                rvmat = self._plate_rvmat(texture_path, nohq_tex_rel)
+                with open(os.path.join(subdir, rvmat_name), "w", encoding="utf-8") as rf:
+                    rf.write(rvmat)
+                self._plog("rvmat written.", "ok")
+
+                material_block = (
+                    "\n    \thiddenSelectionsMaterials[]=\n"
+                    "    \t{\n"
+                    f"    \t\t\"{rvmat_rel}\"\n"
+                    "    \t};"
+                )
+
+            # Write config.cpp — inherits LicensePlate_Base from the loaded Callatic mod
+            config = f"""class CfgPatches
+{{
+\tclass {class_name}
+\t{{
+\t\tunits[]={{
+            {class_name}
+        }};
+\t\tweapons[]={{}};
+\t\trequiredVersion=0.1;
+\t\trequiredAddons[]=
+\t\t{{
+\t\t\t"Callatic_Vehicles_License_Plates"
+\t\t}};
+\t}};
+}};
+class CfgVehicles
+{{
+    class LicensePlate_Base;
+    class {class_name}: LicensePlate_Base
+    {{
+    \tscope=2;
+\t\tdisplayName = "TF Plate - {display}";
+\t\tdescriptionShort = "A Customized License Plate made for {display}";
+        hiddenSelections[]=
+\t    {{
+\t    \t"camo"
+\t    }};
+    \thiddenSelectionsTextures[]=
+    \t{{
+    \t\t"{texture_path}"
+    \t}};{material_block}
+    \t
+    }};
+}}"""
+
+            with open(os.path.join(subdir, "config.cpp"), "w", encoding="utf-8") as f:
+                f.write(config)
+            self._plog("config.cpp written.", "ok")
+
+            # Update classnames.txt
+            classnames_path = os.path.join(TF_LICENSEPLATES, "classnames.txt")
+            insert_after = "LICENSE PLATES\n-----------------------"
+            try:
+                with open(classnames_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except FileNotFoundError:
+                content = insert_after + "\n"
+            if insert_after in content:
+                content = content.replace(insert_after, f"{insert_after}\n{class_name}", 1)
+            else:
+                content = content.rstrip() + f"\n{class_name}\n"
+            with open(classnames_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            self._plog(f"Added {class_name} to classnames.txt.", "ok")
+
+            self._plog(f"\nDone! {class_name} created.", "ok")
+            self._plog("Rebuild the TF_LicensePlates PBO, and make sure the Callatic", "inf")
+            self._plog("license-plate mod is loaded alongside it.", "inf")
+
+        except Exception as e:
+            self._plog(f"Error: {e}", "err")
+        finally:
+            self.plate_create_btn.configure(state="normal")
+
+    def _plate_rvmat(self, co_path, nohq_path):
+        # Same material as Callatic's plate_default.rvmat: Stage0 = _co, Stage1 = NOHQ,
+        # remaining stages procedural + vanilla env map. Only Stage0/Stage1 differ per plate.
+        rvmat = r"""ambient[] = {1,1,1,1};
+diffuse[] = {1,1,1,1};
+forcedDiffuse[] = {0,0,0,0};
+emmisive[] = {0,0,0,1};
+specular[] = {1,1,1,1};
+specularPower = 320;
+
+PixelShaderID = "Super";
+VertexShaderID = "Super";
+
+class Stage0
+{
+    texture = "__CO__";
+    uvSource = "tex";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+
+class Stage1   // NOHQ (normal)
+{
+    texture = "__NOHQ__";
+    uvSource = "tex";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+
+class Stage2
+{
+    texture = "#(argb,8,8,3)color(0.25,0.25,0.25,0.25,DT)";
+    uvSource = "tex";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+
+class Stage3   // MC (macro) - safe blank
+{
+    texture = "#(argb,8,8,3)color(0,0,0,0,MC)";
+    uvSource = "tex";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+
+class Stage4   // AS (ambient shadow) - white so it does NOT darken
+{
+    texture = "#(argb,8,8,3)color(1,1,1,1,AS)";
+    uvSource = "tex";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+
+class Stage5   // SMDI (spec/gloss/metal packed)
+{
+    texture = "#(argb,8,8,3)color(0.5,0.5,1,1,SMDI)";
+    uvSource = "tex";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+
+class Stage6   // Fresnel
+{
+    texture = "#(ai,64,64,1)fresnel(1.1,0.3)";
+    uvSource = "tex";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+
+class Stage7   // Environment map
+{
+    texture = "dz\data\data\env_land_co.paa";
+    uvSource = "tex";
+    useWorldEnvMap = "true";
+    class uvTransform
+    {
+        aside[] = {1,0,0};
+        up[] = {0,1,0};
+        dir[] = {0,0,0};
+        pos[] = {0,0,0};
+    };
+};
+"""
+        return rvmat.replace("__CO__", co_path).replace("__NOHQ__", nohq_path)
 
     # ── Publisher ─────────────────────────────────────────────────────────────
     def _open_publisher(self):
