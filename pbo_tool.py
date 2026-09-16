@@ -10,8 +10,25 @@ import threading
 ADDON_BUILDER   = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\AddonBuilder\AddonBuilder.exe"
 DSSIGNFILE      = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\DsUtils\DSSignFile.exe"
 MODS_SOURCE     = r"P:\\"
-LOCAL_SERVER    = r"C:\Program Files (x86)\Steam\steamapps\common\DayZServer"
-START_BAT       = os.path.join(LOCAL_SERVER, "start.bat")
+SERVERS = {
+    "stable": {
+        "label":      "Stable",
+        "dir":        r"C:\Program Files (x86)\Steam\steamapps\common\DayZServer",
+        "title":      "brnz Server Tools",
+        "accent":     "#569cd6",
+        "bat_name":   "brnz local",
+        "selections": "server_mod_selections.json",
+    },
+    "exp": {
+        "label":      "Experimental",
+        "dir":        r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Server Exp",
+        "title":      "brnz Server Tools - Experimental",
+        "accent":     "#e5a52a",
+        "bat_name":   "brnz local exp",
+        "selections": "server_mod_selections_exp.json",
+    },
+}
+SETTINGS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tool_settings.json")
 STAGING_BASE    = r"C:\Users\b_mal\Desktop\Core Stuff"
 MODPACK_BASE    = r"D:\MODS"
 
@@ -40,7 +57,7 @@ class PBOTool(tk.Tk):
         self.resizable(False, False)
         self.configure(bg="#1e1e1e")
 
-        style = ttk.Style(self)
+        self.style = style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("TFrame",       background="#1e1e1e")
         style.configure("TLabel",       background="#1e1e1e", foreground="#d4d4d4", font=("Segoe UI", 10))
@@ -53,7 +70,24 @@ class PBOTool(tk.Tk):
         style.configure("Success.TLabel", background="#1e1e1e", foreground="#4ec94e", font=("Segoe UI", 10))
         style.configure("Error.TLabel",   background="#1e1e1e", foreground="#f44747", font=("Segoe UI", 10))
 
-        notebook = ttk.Notebook(self)
+        # ── Mode (Stable / Experimental) ──────────────────────────────────
+        self.mode = self._load_settings().get("mode", "stable")
+        if self.mode not in SERVERS:
+            self.mode = "stable"
+        self._set_mode_paths(self.mode)
+
+        mode_bar = ttk.Frame(self)
+        mode_bar.pack(fill="x", padx=16, pady=(12, 0))
+        ttk.Label(mode_bar, text="Server:", font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 10))
+        self.mode_var = tk.StringVar(value=self.mode)
+        for key in SERVERS:
+            ttk.Radiobutton(mode_bar, text=SERVERS[key]["label"], variable=self.mode_var,
+                            value=key, command=self._on_mode_change).pack(side="left", padx=(0, 12))
+        self.mode_banner = tk.Label(mode_bar, text="", bg="#1e1e1e", fg="#d4d4d4",
+                                    font=("Segoe UI", 9), anchor="e")
+        self.mode_banner.pack(side="right")
+
+        self.notebook = notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=8, pady=8)
 
         self.tab_pbo    = ttk.Frame(notebook)
@@ -70,7 +104,89 @@ class PBOTool(tk.Tk):
         self._build_plate_tab()
         self._build_server_tab()
         self._populate_mods()
-        self._ensure_start_bat()
+        self._apply_mode(self.mode)
+
+    # ── Mode handling ─────────────────────────────────────────────────────────
+    def _load_settings(self):
+        import json
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_settings(self):
+        import json
+        data = self._load_settings()
+        data["mode"] = self.mode
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def _set_mode_paths(self, mode):
+        cfg = SERVERS[mode]
+        self.mode             = mode
+        self.server_dir       = cfg["dir"]
+        self.start_bat        = os.path.join(cfg["dir"], "start.bat")
+        self._selections_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), cfg["selections"])
+
+    def _on_mode_change(self):
+        new_mode = self.mode_var.get()
+        if new_mode == self.mode:
+            return
+        if self._server_proc and self._server_proc.poll() is None:
+            messagebox.showwarning("Server running",
+                                   f"The {SERVERS[self.mode]['label']} server is still running.\n"
+                                   "Stop it before switching modes.")
+            self.mode_var.set(self.mode)
+            return
+        self._apply_mode(new_mode)
+
+    def _apply_mode(self, mode):
+        cfg = SERVERS[mode]
+        self._set_mode_paths(mode)
+        self.mode_var.set(mode)
+        is_exp = (mode == "exp")
+
+        # Title, accent colour, banner
+        self.title(cfg["title"])
+        self.style.configure("Header.TLabel", foreground=cfg["accent"])
+        self.mode_banner.configure(text=cfg["dir"], fg=cfg["accent"])
+
+        # Tabs: experimental only gets PBO Builder + Local Server
+        if is_exp:
+            self.notebook.hide(self.tab_shop)
+            self.notebook.hide(self.tab_plate)
+        else:
+            self.notebook.add(self.tab_shop)
+            self.notebook.add(self.tab_plate)
+
+        # Destinations: experimental only packs to the local server
+        for val, rb in self.dest_radios.items():
+            if val == "local":
+                continue
+            if is_exp:
+                rb.pack_forget()
+            else:
+                rb.pack(anchor="w")
+        if is_exp:
+            self.dest_var.set("local")
+        self._on_dest_change()
+
+        # Server tab follows the new server folder
+        if not os.path.isdir(self.server_dir):
+            self._log(f"Server folder not found: {self.server_dir}", "err")
+        else:
+            self._ensure_start_bat()
+        self._load_server_mods()
+        self.srv_log.configure(state="normal")
+        self.srv_log.delete("1.0", "end")
+        self.srv_log.configure(state="disabled")
+        self._load_log()
+
+        self._save_settings()
 
     def _build_pbo_tab(self):
         pad = {"padx": 12, "pady": 6}
@@ -112,8 +228,11 @@ class PBOTool(tk.Tk):
         dest_frame.grid(row=3, column=1, sticky="w", **pad)
 
         self.dest_var = tk.StringVar(value="local")
+        self.dest_radios = {}
         for text, val in [("Local server (test)", "local"), ("Staging only", "staging_only"), ("Staging + Modpack", "staging"), ("Modpack only", "modpack")]:
-            ttk.Radiobutton(dest_frame, text=text, variable=self.dest_var, value=val, command=self._on_dest_change).pack(anchor="w")
+            rb = ttk.Radiobutton(dest_frame, text=text, variable=self.dest_var, value=val, command=self._on_dest_change)
+            rb.pack(anchor="w")
+            self.dest_radios[val] = rb
 
         # Pack selector (staging/modpack)
         self.pack_frame = ttk.Frame(f)
@@ -242,9 +361,9 @@ class PBOTool(tk.Tk):
     # ── Local server ──────────────────────────────────────────────────────────
     def _build_local(self, mod, src):
         mod_folder = f"@{mod}"
-        addons_dir = os.path.join(LOCAL_SERVER, mod_folder, "addons")
+        addons_dir = os.path.join(self.server_dir, mod_folder, "addons")
         os.makedirs(addons_dir, exist_ok=True)
-        self._log(f"Packing {mod} → local server...", "inf")
+        self._log(f"Packing {mod} → local {SERVERS[self.mode]['label']} server...", "inf")
 
         ok = self._addon_builder(src, addons_dir)
         if not ok:
@@ -255,7 +374,7 @@ class PBOTool(tk.Tk):
         self._log("Done. Restart your local server to load the mod.", "ok")
 
     def _patch_startbat(self, mod_folder):
-        with open(START_BAT, "r", encoding="utf-8") as f:
+        with open(self.start_bat, "r", encoding="utf-8") as f:
             content = f.read()
 
         pattern = r'("-mod=)([^"]*)"'
@@ -272,7 +391,7 @@ class PBOTool(tk.Tk):
         new_mods = current_mods.rstrip(";") + f";{mod_folder}"
         new_content = content[:match.start()] + f'"-mod={new_mods}"' + content[match.end():]
 
-        with open(START_BAT, "w", encoding="utf-8") as f:
+        with open(self.start_bat, "w", encoding="utf-8") as f:
             f.write(new_content)
         self._log(f"Added {mod_folder} to start.bat.", "ok")
 
@@ -1068,7 +1187,6 @@ class Stage7   // Environment map
 
         self._server_proc = None
         self._log_after   = None
-        self._selections_file = os.path.join(os.path.dirname(__file__), "server_mod_selections.json")
 
         ttk.Label(f, text="Local Server Manager", style="Header.TLabel").grid(row=0, column=0, columnspan=3, pady=(14, 4), padx=12, sticky="w")
         ttk.Separator(f, orient="horizontal").grid(row=1, column=0, columnspan=3, sticky="ew", padx=12)
@@ -1154,10 +1272,13 @@ class Stage7   // Environment map
 
     def _load_server_mods(self):
         import json
-        all_mods = sorted([
-            d for d in os.listdir(LOCAL_SERVER)
-            if d.startswith("@") and os.path.isdir(os.path.join(LOCAL_SERVER, d))
-        ], key=lambda x: x.lstrip("@").lower())
+        try:
+            all_mods = sorted([
+                d for d in os.listdir(self.server_dir)
+                if d.startswith("@") and os.path.isdir(os.path.join(self.server_dir, d))
+            ], key=lambda x: x.lstrip("@").lower())
+        except FileNotFoundError:
+            all_mods = []
 
         saved = {}
         if os.path.exists(self._selections_file):
@@ -1170,7 +1291,7 @@ class Stage7   // Environment map
         # Get currently active mods from start.bat
         active = set()
         try:
-            with open(START_BAT, "r", encoding="utf-8") as f:
+            with open(self.start_bat, "r", encoding="utf-8") as f:
                 content = f.read()
             match = re.search(r'"-mod=([^"]*)"', content)
             if match:
@@ -1225,10 +1346,10 @@ class Stage7   // Environment map
 
         # Patch start.bat
         try:
-            with open(START_BAT, "r", encoding="utf-8") as f:
+            with open(self.start_bat, "r", encoding="utf-8") as f:
                 content = f.read()
             new_content = re.sub(r'"-mod=[^"]*"', f'"-mod={mod_str}"', content)
-            with open(START_BAT, "w", encoding="utf-8") as f:
+            with open(self.start_bat, "w", encoding="utf-8") as f:
                 f.write(new_content)
         except Exception as e:
             messagebox.showerror("Error", f"Could not patch start.bat: {e}")
@@ -1239,11 +1360,11 @@ class Stage7   // Environment map
         si.wShowWindow = 6  # SW_MINIMIZE
 
         self._server_proc = subprocess.Popen(
-            [os.path.join(LOCAL_SERVER, "DayZServer_x64.exe"),
+            [os.path.join(self.server_dir, "DayZServer_x64.exe"),
              "-config=serverDZ.cfg", "-port=2302", "-cpuCount=2",
              "-dologs", "-adminlog", "-netlog", "-freezecheck",
              "-profiles=Profiles", f"-mod={mod_str}"],
-            cwd=LOCAL_SERVER,
+            cwd=self.server_dir,
             stdin=subprocess.DEVNULL,
             startupinfo=si
         )
@@ -1261,7 +1382,7 @@ class Stage7   // Environment map
 
     def _tail_rpt_live(self):
         import time, glob
-        profiles = os.path.join(LOCAL_SERVER, "Profiles")
+        profiles = os.path.join(self.server_dir, "Profiles")
 
         # Wait up to 20s for a new RPT to appear
         rpt_path = None
@@ -1325,16 +1446,18 @@ class Stage7   // Environment map
         self.srv_status_lbl.configure(text="● Stopped", foreground="#f44747")
 
     def _ensure_start_bat(self):
-        if not os.path.exists(START_BAT):
+        if not os.path.exists(self.start_bat):
             self._generate_start_bat()
 
-    def _generate_start_bat(self, name="brnz local", port="2302", config="serverDZ.cfg", cpu="2"):
+    def _generate_start_bat(self, name=None, port="2302", config="serverDZ.cfg", cpu="2"):
+        if not name:
+            name = SERVERS[self.mode]["bat_name"]
         content = f"""@echo off
 :start
 ::Server name (This is just for the bat file)
 set serverName={name}
 ::Server files location
-set serverLocation="C:\\Program Files (x86)\\Steam\\steamapps\\common\\DayZServer"
+set serverLocation="{self.server_dir}"
 ::Server Port
 set serverPort={port}
 ::Server config
@@ -1356,14 +1479,14 @@ timeout 10
 ::Go back to the top and repeat the whole cycle again
 goto start
 """
-        with open(START_BAT, "w", encoding="utf-8") as f:
+        with open(self.start_bat, "w", encoding="utf-8") as f:
             f.write(content)
 
     def _edit_params_dialog(self):
         # Read current values from start.bat
         params = {"serverName": "", "serverPort": "", "serverConfig": "", "serverCPU": ""}
         try:
-            with open(START_BAT, "r", encoding="utf-8") as f:
+            with open(self.start_bat, "r", encoding="utf-8") as f:
                 for line in f:
                     for key in params:
                         m = re.match(rf"set {key}=(.+)", line.strip())
@@ -1391,11 +1514,11 @@ goto start
 
         def save():
             try:
-                with open(START_BAT, "r", encoding="utf-8") as f:
+                with open(self.start_bat, "r", encoding="utf-8") as f:
                     content = f.read()
                 for key, var in vars_.items():
                     content = re.sub(rf"(set {key}=).+", rf"\g<1>{var.get().strip()}", content)
-                with open(START_BAT, "w", encoding="utf-8") as f:
+                with open(self.start_bat, "w", encoding="utf-8") as f:
                     f.write(content)
                 dialog.destroy()
             except Exception as e:
@@ -1418,7 +1541,7 @@ goto start
         ttk.Button(btn_frame, text="Regenerate start.bat", command=regenerate).pack(side="left", padx=6)
 
     def _edit_server_cfg_dialog(self):
-        cfg_path = os.path.join(LOCAL_SERVER, "serverDZ.cfg")
+        cfg_path = os.path.join(self.server_dir, "serverDZ.cfg")
         if not os.path.exists(cfg_path):
             messagebox.showerror("Error", "serverDZ.cfg not found.")
             return
@@ -1513,7 +1636,7 @@ goto start
 
     def _load_log(self):
         log_type = self.log_type_var.get()
-        profiles = os.path.join(LOCAL_SERVER, "Profiles")
+        profiles = os.path.join(self.server_dir, "Profiles")
         target = None
 
         try:

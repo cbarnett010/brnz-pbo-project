@@ -1,3 +1,5 @@
 server_mod_selections.json
+server_mod_selections_exp.json
+tool_settings.json
 __pycache__/
 *.pyc
