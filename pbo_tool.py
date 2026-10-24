@@ -7,13 +7,36 @@ import re
 import threading
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-ADDON_BUILDER   = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\AddonBuilder\AddonBuilder.exe"
-DSSIGNFILE      = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\DsUtils\DSSignFile.exe"
-MODS_SOURCE     = r"P:\\"
+# Defaults below assume a standard Steam install. Every folder can be changed
+# from inside the app via the "⚙ Paths" button; choices are saved to
+# tool_settings.json next to this script.
+import json
+
+_HERE         = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_FILE = os.path.join(_HERE, "tool_settings.json")
+_STEAM_COMMON = r"C:\Program Files (x86)\Steam\steamapps\common"
+
+DEFAULT_PATHS = {
+    "dayz_tools":    os.path.join(_STEAM_COMMON, "DayZ Tools"),
+    "server_stable": os.path.join(_STEAM_COMMON, "DayZServer"),
+    "server_exp":    os.path.join(_STEAM_COMMON, "DayZ Server Exp"),
+    "mods_source":   "P:\\",
+    "staging":       os.path.join(os.path.expanduser("~"), "Desktop", "Core Stuff"),
+    "modpacks":      r"D:\MODS",
+}
+PATH_LABELS = {
+    "dayz_tools":    ("DayZ Tools folder",            "Steam → DayZ Tools → Manage → Browse local files"),
+    "server_stable": ("DayZ Server folder (Stable)",  "Folder containing DayZServer_x64.exe"),
+    "server_exp":    ("DayZ Server folder (Exp)",     "Experimental server, optional"),
+    "mods_source":   ("Mod source drive",             "Usually P:\\ (mounted by DayZ Tools)"),
+    "staging":       ("Staging folder",               "Where packed PBOs are staged"),
+    "modpacks":      ("Modpacks folder",              "Contains @TheFactoryCore etc."),
+}
+
 SERVERS = {
     "stable": {
         "label":      "Stable",
-        "dir":        r"C:\Program Files (x86)\Steam\steamapps\common\DayZServer",
+        "dir":        DEFAULT_PATHS["server_stable"],
         "title":      "brnz Server Tools",
         "accent":     "#569cd6",
         "bat_name":   "brnz local",
@@ -21,20 +44,12 @@ SERVERS = {
     },
     "exp": {
         "label":      "Experimental",
-        "dir":        r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Server Exp",
+        "dir":        DEFAULT_PATHS["server_exp"],
         "title":      "brnz Server Tools - Experimental",
         "accent":     "#e5a52a",
         "bat_name":   "brnz local exp",
         "selections": "server_mod_selections_exp.json",
     },
-}
-SETTINGS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tool_settings.json")
-STAGING_BASE    = r"C:\Users\b_mal\Desktop\Core Stuff"
-MODPACK_BASE    = r"D:\MODS"
-
-BIKEYS = {
-    "TheFactory":     r"D:\MODS\@TheFactoryCore\Keys\TheFactory.biprivatekey",
-    "TheFactoryTest": r"D:\MODS\@TheFactoryCoreTest\Keys\TheFactoryTest.biprivatekey",
 }
 
 MODPACKS = {
@@ -44,9 +59,70 @@ MODPACKS = {
     "Vehicles": ("TheFactoryVehicles", "TheFactoryVehiclesTest", "vehicles"),
 }
 
-TF_SHOP         = r"P:\TF_Shop"
-TF_LICENSEPLATES = r"P:\TF_LicensePlates"
-IMAGE_TO_PAA    = r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\ImageToPAA\ImageToPAA.exe"
+# These are derived from the folders above by apply_paths()
+ADDON_BUILDER = DSSIGNFILE = IMAGE_TO_PAA = PUBLISHER = None
+MODS_SOURCE = STAGING_BASE = MODPACK_BASE = TF_SHOP = TF_LICENSEPLATES = None
+BIKEYS = {}
+
+
+def read_settings():
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def write_settings(data):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def load_paths():
+    """Defaults overlaid with whatever the user saved in tool_settings.json."""
+    paths = dict(DEFAULT_PATHS)
+    saved = read_settings().get("paths", {})
+    for key in DEFAULT_PATHS:
+        val = saved.get(key)
+        if isinstance(val, str) and val.strip():
+            paths[key] = val.strip()
+    return paths
+
+
+def apply_paths(paths):
+    """Rebuild every derived path from the six configurable folders."""
+    global ADDON_BUILDER, DSSIGNFILE, IMAGE_TO_PAA, PUBLISHER
+    global MODS_SOURCE, STAGING_BASE, MODPACK_BASE, TF_SHOP, TF_LICENSEPLATES, BIKEYS
+    tools = paths["dayz_tools"]
+    ADDON_BUILDER = os.path.join(tools, "Bin", "AddonBuilder", "AddonBuilder.exe")
+    DSSIGNFILE    = os.path.join(tools, "Bin", "DsUtils", "DSSignFile.exe")
+    IMAGE_TO_PAA  = os.path.join(tools, "Bin", "ImageToPAA", "ImageToPAA.exe")
+    PUBLISHER     = os.path.join(tools, "Bin", "Publisher", "Publisher.exe")
+
+    SERVERS["stable"]["dir"] = paths["server_stable"]
+    SERVERS["exp"]["dir"]    = paths["server_exp"]
+
+    # Make sure the drive root keeps its backslash: "P:" alone would mean "cwd on P:"
+    ms = paths["mods_source"]
+    if re.fullmatch(r"[A-Za-z]:", ms):
+        ms += "\\"
+    MODS_SOURCE      = os.path.join(ms, "")
+    TF_SHOP          = os.path.join(MODS_SOURCE, "TF_Shop")
+    TF_LICENSEPLATES = os.path.join(MODS_SOURCE, "TF_LicensePlates")
+
+    STAGING_BASE = paths["staging"]
+    MODPACK_BASE = paths["modpacks"]
+    BIKEYS = {
+        "TheFactory":     os.path.join(MODPACK_BASE, "@TheFactoryCore",     "Keys", "TheFactory.biprivatekey"),
+        "TheFactoryTest": os.path.join(MODPACK_BASE, "@TheFactoryCoreTest", "Keys", "TheFactoryTest.biprivatekey"),
+    }
+
+
+CURRENT_PATHS = load_paths()
+apply_paths(CURRENT_PATHS)
 
 
 # ── Main App ─────────────────────────────────────────────────────────────────
@@ -83,9 +159,10 @@ class PBOTool(tk.Tk):
         for key in SERVERS:
             ttk.Radiobutton(mode_bar, text=SERVERS[key]["label"], variable=self.mode_var,
                             value=key, command=self._on_mode_change).pack(side="left", padx=(0, 12))
+        ttk.Button(mode_bar, text="⚙ Paths", command=self._paths_dialog).pack(side="right")
         self.mode_banner = tk.Label(mode_bar, text="", bg="#1e1e1e", fg="#d4d4d4",
                                     font=("Segoe UI", 9), anchor="e")
-        self.mode_banner.pack(side="right")
+        self.mode_banner.pack(side="right", padx=(0, 12))
 
         self.notebook = notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=8, pady=8)
@@ -106,24 +183,106 @@ class PBOTool(tk.Tk):
         self._populate_mods()
         self._apply_mode(self.mode)
 
+        # First run on a new PC: point the user at the Paths dialog if the
+        # essentials are missing and nothing has been configured yet.
+        if "paths" not in read_settings() and (
+                not os.path.isfile(ADDON_BUILDER) or not os.path.isdir(self.server_dir)):
+            self.after(300, self._first_run_prompt)
+
+    def _first_run_prompt(self):
+        if messagebox.askyesno(
+                "Set up paths",
+                "DayZ Tools or the DayZ Server folder was not found at the default Steam location.\n\n"
+                "Open the Paths settings now to tell the tool where they are?"):
+            self._paths_dialog()
+
+    # ── Paths dialog ───────────────────────────────────────────────────────────
+    def _paths_dialog(self):
+        proc = getattr(self, "_server_proc", None)
+        if proc is not None and proc.poll() is None:
+            messagebox.showwarning("Server running",
+                                   "Stop the local server before changing paths.")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Paths")
+        dialog.configure(bg="#1e1e1e")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Where things live on this PC", style="Header.TLabel")\
+            .grid(row=0, column=0, columnspan=3, padx=12, pady=(12, 4), sticky="w")
+        ttk.Label(dialog, text="Changes are saved to tool_settings.json and take effect immediately.",
+                  foreground="#9a9a9a").grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 8), sticky="w")
+
+        vars_ = {}
+        row = 2
+        for key, (label, hint) in PATH_LABELS.items():
+            ttk.Label(dialog, text=label).grid(row=row, column=0, padx=12, pady=(6, 0), sticky="w")
+            var = tk.StringVar(value=CURRENT_PATHS.get(key, DEFAULT_PATHS[key]))
+            vars_[key] = var
+            tk.Entry(dialog, textvariable=var, width=60,
+                     bg="#3a3a3a", fg="#d4d4d4", insertbackground="#d4d4d4",
+                     relief="flat", font=("Segoe UI", 10)).grid(row=row, column=1, padx=(0, 6), pady=(6, 0))
+
+            def browse(v=var):
+                initial = v.get() if os.path.isdir(v.get()) else os.path.expanduser("~")
+                chosen = filedialog.askdirectory(parent=dialog, initialdir=initial)
+                if chosen:
+                    v.set(os.path.normpath(chosen))
+
+            ttk.Button(dialog, text="Browse…", command=browse).grid(row=row, column=2, padx=(0, 12), pady=(6, 0))
+            ttk.Label(dialog, text=hint, foreground="#9a9a9a", font=("Segoe UI", 8))\
+                .grid(row=row + 1, column=1, padx=(0, 6), sticky="w")
+            row += 2
+
+        def save():
+            paths = {k: v.get().strip() for k, v in vars_.items()}
+            empty = [PATH_LABELS[k][0] for k, v in paths.items() if not v]
+            if empty:
+                messagebox.showerror("Missing", "Please fill in: " + ", ".join(empty), parent=dialog)
+                return
+            warnings = []
+            if not os.path.isfile(os.path.join(paths["dayz_tools"], "Bin", "AddonBuilder", "AddonBuilder.exe")):
+                warnings.append("AddonBuilder.exe was not found under the DayZ Tools folder.")
+            if not os.path.isfile(os.path.join(paths["server_stable"], "DayZServer_x64.exe")):
+                warnings.append("DayZServer_x64.exe was not found in the Stable server folder.")
+            if warnings and not messagebox.askyesno(
+                    "Check paths", "\n".join(warnings) + "\n\nSave anyway?", parent=dialog):
+                return
+            self._apply_new_paths(paths)
+            dialog.destroy()
+
+        def reset():
+            for k, v in vars_.items():
+                v.set(DEFAULT_PATHS[k])
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.grid(row=row, column=0, columnspan=3, pady=(8, 12))
+        ttk.Button(btn_frame, text="Save", command=save).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Reset to defaults", command=reset).pack(side="left", padx=6)
+
+    def _apply_new_paths(self, paths):
+        global CURRENT_PATHS
+        CURRENT_PATHS = dict(paths)
+        apply_paths(CURRENT_PATHS)
+        data = read_settings()
+        data["paths"] = CURRENT_PATHS
+        write_settings(data)
+        # Refresh everything that depends on the folders
+        self._populate_mods()
+        self._apply_mode(self.mode)
+        self._log("Paths updated.", "inf")
+
     # ── Mode handling ─────────────────────────────────────────────────────────
     def _load_settings(self):
-        import json
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        return read_settings()
 
     def _save_settings(self):
-        import json
-        data = self._load_settings()
+        data = read_settings()
         data["mode"] = self.mode
-        try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
+        write_settings(data)
 
     def _set_mode_paths(self, mode):
         cfg = SERVERS[mode]
@@ -1101,7 +1260,7 @@ class Stage7   // Environment map
     # ── Publisher ─────────────────────────────────────────────────────────────
     def _open_publisher(self):
         try:
-            subprocess.Popen([r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools\Bin\Publisher\Publisher.exe"])
+            subprocess.Popen([PUBLISHER])
         except Exception as e:
             messagebox.showerror("Error", f"Could not open Publisher: {e}")
 
